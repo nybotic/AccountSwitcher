@@ -26,6 +26,9 @@ const AccountManager = findByPropsLazy("loginToken") as { loginToken(token: stri
 const TokenModule = findByPropsLazy("getToken") as { getToken(): string | null | undefined; };
 
 let cachedPassword: string | null = null;
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+const modifierKeys = new Set(["CONTROL", "SHIFT", "ALT", "META"]);
 
 const settings = definePluginSettings({
     accounts: {
@@ -161,7 +164,7 @@ function eventToKeybind(event: KeyboardEvent) {
     if (event.shiftKey) keys.push("SHIFT");
 
     const main = normalizeKeyName(event);
-    if (!["CONTROL", "SHIFT", "ALT", "META"].includes(main)) keys.push(main);
+    if (!modifierKeys.has(main)) keys.push(main);
 
     return keys;
 }
@@ -178,7 +181,10 @@ function matchesKeybind(event: KeyboardEvent, keybind: string[]) {
     if (!keybind?.length) return false;
 
     const pressed = eventToKeybind(event);
-    return keybind.length === pressed.length && keybind.every(key => pressed.includes(key));
+    if (keybind.length !== pressed.length) return false;
+
+    const pressedKeys = new Set(pressed);
+    return keybind.every(key => pressedKeys.has(key));
 }
 
 function shouldIgnoreKeybindTarget(target: EventTarget | null) {
@@ -204,7 +210,7 @@ function decodeBase64(text: string): Uint8Array<ArrayBuffer> {
 async function getKey(password: string, salt: Uint8Array<ArrayBuffer>) {
     const baseKey = await crypto.subtle.importKey(
         "raw",
-        new TextEncoder().encode(password),
+        encoder.encode(password),
         "PBKDF2",
         false,
         ["deriveKey"]
@@ -226,7 +232,7 @@ async function encryptToken(token: string, password: string) {
     const encrypted = new Uint8Array(await crypto.subtle.encrypt(
         { name: "AES-CBC", iv },
         key,
-        new TextEncoder().encode(token)
+        encoder.encode(token)
     ));
 
     return `v1:${encodeBase64(salt)}:${encodeBase64(iv)}:${encodeBase64(encrypted)}`;
@@ -245,7 +251,7 @@ async function decryptToken(payload: string, password: string) {
         decodeBase64(encryptedText)
     );
 
-    return new TextDecoder().decode(decrypted);
+    return decoder.decode(decrypted);
 }
 
 function getCurrentAccountName(user: any) {
@@ -254,6 +260,12 @@ function getCurrentAccountName(user: any) {
 
 function getCurrentToken() {
     return TokenModule.getToken?.();
+}
+
+function applyCurrentUserToAccount(account: SavedAccount, user: any, token: string) {
+    account.name = getCurrentAccountName(user);
+    account.avatar = user.getAvatarURL?.(void 0, 128, true);
+    account.token = token;
 }
 
 function askPassword(title: string, body?: React.ReactNode, secondInput = false): Promise<string | [string, string]> {
@@ -345,20 +357,10 @@ async function addCurrentAccount() {
     const savedToken = password ? await encryptToken(token, password) : token;
 
     if (existing) {
-        if (existing.token) {
-            existing.name = getCurrentAccountName(user);
-            existing.avatar = user.getAvatarURL?.(void 0, 128, true);
-            existing.token = savedToken;
-            setAccounts(accounts);
-            showToast(`Updated ${existing.name}.`, Toasts.Type.SUCCESS);
-            return;
-        }
-
-        existing.name = getCurrentAccountName(user);
-        existing.avatar = user.getAvatarURL?.(void 0, 128, true);
-        existing.token = savedToken;
+        const wasSaved = Boolean(existing.token);
+        applyCurrentUserToAccount(existing, user, savedToken);
         setAccounts(accounts);
-        showToast(`Saved ${existing.name}.`, Toasts.Type.SUCCESS);
+        showToast(`${wasSaved ? "Updated" : "Saved"} ${existing.name}.`, Toasts.Type.SUCCESS);
         return;
     }
 
